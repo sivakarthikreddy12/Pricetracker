@@ -1,0 +1,226 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MacBook Air M4 Price Monitor</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#f4f6fb;padding:18px}
+    .card{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+    h1{font-size:18px;margin:0 0 12px}
+    .row{display:flex;justify-content:space-between;align-items:center}
+    .small{font-size:13px;color:#666}
+    button{padding:10px 12px;border:none;background:#007bff;color:#fff;border-radius:6px}
+    a{color:#007bff}
+    #status{font-size:13px;color:#333;margin-top:8px}
+    .price{font-weight:700;font-size:18px}
+    .danger{color:#b22222}
+    .ok{color:green}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>MacBook Air M4 — Auto Price Monitor (India)</h1>
+    <div class="row">
+      <div>
+        <div class="small">Threshold (₹)</div>
+        <input id="threshold" type="number" value="80000" style="padding:8px;border:1px solid #ddd;border-radius:6px;width:120px" />
+      </div>
+      <div>
+        <div class="small">Check interval</div>
+        <select id="interval" style="padding:8px;border:1px solid #ddd;border-radius:6px">
+          <option value="30">30 minutes</option>
+          <option value="60" selected>60 minutes</option>
+          <option value="15">15 minutes</option>
+        </select>
+      </div>
+      <div>
+        <div class="small">&nbsp;</div>
+        <button id="btnCheck">Check Now</button>
+      </div>
+    </div>
+
+
+    <div id="status" class="small">Status: Idle</div>
+  </div>
+
+
+  <div id="results"></div>
+
+
+<script>
+/*
+  How it works:
+  - We query publicly-available search pages for "macbook air m4" on Amazon.in and Flipkart
+  - Use a CORS proxy (allorigins) to fetch HTML (client-side)
+  - Extract the first occurrence of ₹<digits,...> on each page
+  - Compare and alert if any price <= threshold
+  - Limitations: may fail if page structure changes or proxy is rate-limited. For robust monitoring, use server-side scraping.
+*/
+
+
+const retailers = [
+  { name: 'Amazon.in (search)', url: 'https://www.amazon.in/s?k=macbook+air+m4' },
+  { name: 'Flipkart (search)', url: 'https://www.flipkart.com/search?q=macbook%20air%20m4' }
+];
+
+
+const proxyPrefix = 'https://api.allorigins.win/raw?url=';
+let lastPrices = {};
+const resultsEl = document.getElementById('results');
+const statusEl = document.getElementById('status');
+const btn = document.getElementById('btnCheck');
+
+
+btn.addEventListener('click', () => runChecks(true));
+
+
+document.getElementById('threshold').addEventListener('change', () => {
+  localStorage.setItem('mb_threshold', document.getElementById('threshold').value);
+});
+
+
+document.getElementById('interval').addEventListener('change', () => {
+  localStorage.setItem('mb_interval', document.getElementById('interval').value);
+  setupTimer();
+});
+
+
+// Persist settings
+if(localStorage.getItem('mb_threshold')) document.getElementById('threshold').value = localStorage.getItem('mb_threshold');
+if(localStorage.getItem('mb_interval')) document.getElementById('interval').value = localStorage.getItem('mb_interval');
+
+
+async function fetchHtml(url){
+  const fetchUrl = proxyPrefix + encodeURIComponent(url);
+  const res = await fetch(fetchUrl, {cache: 'no-store'});
+  if(!res.ok) throw new Error('Fetch failed: ' + res.status);
+  return await res.text();
+}
+
+
+function extractINRFromHtml(html){
+  // Find first ₹ followed by digits/commas
+  const m = html.match(/\u20B9\s*([\d,]{2,20})/);
+  if(!m) return null;
+  const digits = m[1].replace(/,/g,'');
+  const n = Number(digits);
+  return Number.isFinite(n) ? n : null;
+}
+
+
+function updateUI(all){
+  resultsEl.innerHTML = '';
+  let lowest = {price: Infinity, name: null, url: null};
+
+
+  for(const r of all){
+    const card = document.createElement('div');
+    card.className = 'card';
+    let priceText = r.price === null ? 'Price not found' : `₹${r.price.toLocaleString()}`;
+    const isBelow = r.price !== null && r.price <= Number(document.getElementById('threshold').value);
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:700">${r.name}</div>
+          <div class="small">${r.url}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="price ${isBelow ? 'danger' : 'ok'}">${priceText}</div>
+          <div style="margin-top:6px"><a href="${r.url}" target="_blank">Open</a></div>
+        </div>
+      </div>
+    `;
+    resultsEl.appendChild(card);
+
+
+    if(r.price !== null && r.price < lowest.price){
+      lowest = {price: r.price, name: r.name, url: r.url};
+    }
+  }
+
+
+  // show summary
+  const summary = document.createElement('div');
+  summary.className = 'card';
+  if(lowest.price === Infinity){
+    summary.innerHTML = `<div style="font-weight:700">No prices found</div>`;
+  } else {
+    summary.innerHTML = `<div style="font-weight:700">Lowest: ₹${lowest.price.toLocaleString()} — ${lowest.name}</div>
+      <div style="margin-top:8px"><a href="${lowest.url}" target="_blank">Open lowest listing</a></div>`;
+  }
+  resultsEl.prepend(summary);
+}
+
+
+async function runChecks(isManual=false){
+  const threshold = Number(document.getElementById('threshold').value) || 80000;
+  statusEl.innerText = 'Status: Checking...';
+  const results = [];
+
+
+  for(const r of retailers){
+    try{
+      const html = await fetchHtml(r.url);
+      const p = extractINRFromHtml(html);
+      results.push({name: r.name, url: r.url, price: p});
+    } catch(e){
+      results.push({name: r.name, url: r.url, price: null, error: e.message});
+    }
+  }
+
+
+  updateUI(results);
+  statusEl.innerText = 'Status: Last checked ' + new Date().toLocaleString();
+
+
+  // Save last prices locally
+  lastPrices = results.reduce((acc, cur) => { acc[cur.name]=cur; return acc; }, {});
+  localStorage.setItem('mb_last', JSON.stringify(lastPrices));
+
+
+  // Decide alert
+  const foundBelow = results.filter(r => r.price !== null && r.price <= threshold);
+  if(foundBelow.length){
+    // notify once (browser alert + notification if supported)
+    const lowest = foundBelow.reduce((a,b)=> a.price<b.price?a:b);
+    const msg = `Price alert: ${lowest.name} ₹${lowest.price.toLocaleString()} ≤ ₹${threshold}`;
+    if(isManual){
+      alert(msg);
+    }
+    try{
+      if('Notification' in window && Notification.permission === 'granted'){
+        new Notification('Price Alert', { body: msg });
+      } else if('Notification' in window && Notification.permission !== 'denied'){
+        Notification.requestPermission().then(perm => {
+          if(perm === 'granted') new Notification('Price Alert', { body: msg });
+        });
+      }
+    }catch(e){}
+  }
+}
+
+
+let timerId = null;
+function setupTimer(){
+  if(timerId) clearInterval(timerId);
+  const mins = Number(document.getElementById('interval').value) || 60;
+  timerId = setInterval(() => runChecks(false), mins * 60 * 1000);
+}
+
+
+// Initial run
+(async function init(){
+  // load cached last prices
+  const stored = localStorage.getItem('mb_last');
+  if(stored){
+    const parsed = Object.values(JSON.parse(stored));
+    if(parsed.length) updateUI(parsed);
+  }
+  // start timer and do immediate check
+  setupTimer();
+  runChecks(false);
+})();
+</script>
+</body>
+</html>
